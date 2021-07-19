@@ -39,6 +39,7 @@
 
 #include "kvasercan_symbols_p.h"
 #include "kvasercanbackend.h"
+#include <QObject>
 
 //
 //  W A R N I N G
@@ -53,8 +54,10 @@
 
 QT_BEGIN_NAMESPACE
 
-class KvaserCanBackendPrivate
+class QTimer;
+class KvaserCanBackendPrivate : public QObject
 {
+    Q_OBJECT
     Q_DECLARE_PUBLIC(KvaserCanBackend)
 public:
     KvaserCanBackendPrivate(KvaserCanBackend *q);
@@ -69,12 +72,18 @@ public:
     bool setBitRate(quint32 bitrate);
     bool setDriverMode(KvaserDriverMode mode);
     bool setBusOn();
+    void startWrite();
 
+public slots:
     void onMessagesAvailable();
     void onStatusChanged();
     void onBusOnOff();
     void onDeviceRemoved();
     void onBusError();
+
+public:
+    QCanBusDevice::CanBusStatus busStatus();
+    void resetController();
 
     KvaserCanBackend * const q_ptr;
 
@@ -82,6 +91,7 @@ public:
     int channelIndex = -1;
     KvaserHandle kvaserHandle = -1;
     bool initAccess;
+    QTimer *writeNotifier = nullptr;
 };
 
 QT_END_NAMESPACE

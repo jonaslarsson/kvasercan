@@ -44,10 +44,7 @@
 #include <QtCore/qcoreevent.h>
 #include <QtCore/qloggingcategory.h>
 #include <QtCore/qtimer.h>
-
-#include <QSettings>
-#include <QLibrary>
-#include <QFileInfo>
+#include <QtCore/qlibrary.h>
 
 #include <algorithm>
 
@@ -62,16 +59,16 @@ Q_GLOBAL_STATIC(QLibrary, kvasercanLibrary)
 static void WINAPI callbackHandler(KvaserHandle, void *internalPointer, quint32 eventFlags)
 {
     KvaserCanBackendPrivate *backend = static_cast<KvaserCanBackendPrivate*>(internalPointer);
-    if (eventFlags & KVASER_NOTIFY_RX)
-        backend->onMessagesAvailable();
+    if (eventFlags & KVASER_NOTIFY_RX)    
+        QMetaObject::invokeMethod(backend, &KvaserCanBackendPrivate::onMessagesAvailable, Qt::QueuedConnection);
     if (eventFlags & KVASER_NOTIFY_STATUS)
-        backend->onStatusChanged();
+        QMetaObject::invokeMethod(backend, &KvaserCanBackendPrivate::onStatusChanged, Qt::QueuedConnection);
     if (eventFlags & KVASER_NOTIFY_BUSONOFF)
-        backend->onBusOnOff();
+        QMetaObject::invokeMethod(backend, &KvaserCanBackendPrivate::onBusOnOff, Qt::QueuedConnection);
     if (eventFlags & KVASER_NOTIFY_REMOVED)
-        backend->onDeviceRemoved();
+        QMetaObject::invokeMethod(backend, &KvaserCanBackendPrivate::onDeviceRemoved, Qt::QueuedConnection);
     if (eventFlags & KVASER_NOTIFY_ERROR)
-        backend->onBusError();
+        QMetaObject::invokeMethod(backend, &KvaserCanBackendPrivate::onBusError, Qt::QueuedConnection);
 }
 
 bool KvaserCanBackend::canCreate(QString *errorReason)
@@ -137,6 +134,31 @@ QList<QCanBusDeviceInfo> KvaserCanBackend::interfaces()
     return result;
 }
 
+class KvaserCanWriteNotifier : public QTimer
+{
+    // no Q_OBJECT macro!
+public:
+    KvaserCanWriteNotifier(KvaserCanBackendPrivate *d, QObject *parent)
+        : QTimer(parent)
+        , dptr(d)
+    {
+        setInterval(0);
+    }
+
+protected:
+    void timerEvent(QTimerEvent *e) override
+    {
+        if (e->timerId() == timerId()) {
+            dptr->startWrite();
+            return;
+        }
+        QTimer::timerEvent(e);
+    }
+
+private:
+    KvaserCanBackendPrivate * const dptr;
+};
+
 KvaserCanBackendPrivate::KvaserCanBackendPrivate(KvaserCanBackend *q)
     : q_ptr(q)
 {
@@ -176,6 +198,8 @@ bool KvaserCanBackendPrivate::open()
         }
     }
 
+    writeNotifier = new KvaserCanWriteNotifier(this, q);
+
     return true;
 }
 
@@ -183,8 +207,14 @@ void KvaserCanBackendPrivate::close()
 {
     if (kvaserHandle < 0)
         return;
+
     canClose(kvaserHandle);
     kvaserHandle = -1;
+
+    if (writeNotifier != nullptr) {
+        delete writeNotifier;
+        writeNotifier = nullptr;
+    }
 }
 
 bool KvaserCanBackendPrivate::setConfigurationParameter(QCanBusDevice::ConfigurationKey key, const QVariant &value)
@@ -228,7 +258,11 @@ void KvaserCanBackendPrivate::setupDefaultConfigurations()
 
 QString KvaserCanBackendPrivate::systemErrorString(KvaserStatus errorCode) const
 {
-    // TODO: Get error string
+    char buffer[256];
+    KvaserStatus result = canGetErrorText(errorCode, buffer, sizeof(buffer));
+    if (result == KvaserStatus::OK) {
+        return QString::fromLatin1(buffer);
+    }
     return KvaserCanBackend::tr("Unable to retrieve an error string");
 }
 
@@ -299,6 +333,49 @@ bool KvaserCanBackendPrivate::setBusOn()
     return true;
 }
 
+void KvaserCanBackendPrivate::startWrite()
+{
+    Q_Q(KvaserCanBackend);
+
+    if (!q->hasOutgoingFrames()) {
+        writeNotifier->stop();
+        return;
+    }
+
+    qint64 frameCount = 0;
+    while (q->hasOutgoingFrames()) {
+        const QCanBusFrame frame = q->dequeueOutgoingFrame();
+        const QByteArray payload = frame.payload();
+
+        quint32 flags = 0;
+        if (frame.frameType() == QCanBusFrame::RemoteRequestFrame)
+            flags |= KVASER_MESSAGE_REMOTE_REQUEST;
+        else if (frame.frameType() == QCanBusFrame::ErrorFrame)
+            flags |= KVASER_MESSAGE_ERROR_FRAME;
+        else
+            flags = 0;
+
+        if (frame.hasExtendedFrameFormat()) {
+            flags |= KVASER_MESSAGE_EXTENDED_FRAME_FORMAT;
+        } else {
+            flags |= KVASER_MESSAGE_STANDARD_FRAME_FORMAT;
+        }
+
+        if (kvaserHandle >= 0) {
+            KvaserStatus result = canWrite(kvaserHandle, frame.frameId(), payload, payload.size(), flags);
+            if (result == KvaserStatus::OK) {
+                frameCount++;
+            } else {
+                q->setError(systemErrorString(result), QCanBusDevice::WriteError);
+            }
+        }
+    }
+
+    if (frameCount > 0) {
+        emit q->framesWritten(frameCount);
+    }
+}
+
 void KvaserCanBackendPrivate::onMessagesAvailable()
 {
     Q_Q(KvaserCanBackend);
@@ -335,6 +412,7 @@ void KvaserCanBackendPrivate::onMessagesAvailable()
 
 void KvaserCanBackendPrivate::onStatusChanged()
 {
+#if 0
     Q_Q(KvaserCanBackend);
     quint32 flags;
     KvaserStatus result = canReadStatus(kvaserHandle, &flags);
@@ -353,6 +431,7 @@ void KvaserCanBackendPrivate::onStatusChanged()
     } else {
         q->setError(systemErrorString(result), QCanBusDevice::ConnectionError);
     }
+#endif
 }
 
 void KvaserCanBackendPrivate::onBusOnOff()
@@ -362,26 +441,65 @@ void KvaserCanBackendPrivate::onBusOnOff()
     KvaserStatus result = canReadStatus(kvaserHandle, &flags);
     if (result == KvaserStatus::OK) {
         if (flags & KVASER_STATUS_BUSOFF) {
-            qDebug() << Q_FUNC_INFO << "OFF";
-            // TODO: Handle bus off
-        } else {
-            qDebug() << Q_FUNC_INFO << "ON";
+            // TODO: Do we need to handle bus off?
         }
     } else {
-        q->setError(systemErrorString(result), QCanBusDevice::ConnectionError);
+        q->setError(systemErrorString(result), QCanBusDevice::ReadError);
     }
 }
 
 void KvaserCanBackendPrivate::onDeviceRemoved()
 {
-    qDebug() << Q_FUNC_INFO;
-    // TODO: Handle device removed
+    Q_Q(KvaserCanBackend);
+    q->close();
 }
 
 void KvaserCanBackendPrivate::onBusError()
 {
-    qDebug() << Q_FUNC_INFO;
-    // TODO: Handle bus error
+    // Bus status changed Error Active, Error Passive or Error Warning
+    // TODO: Do we need to handle this?
+}
+
+QCanBusDevice::CanBusStatus KvaserCanBackendPrivate::busStatus()
+{
+    Q_Q(KvaserCanBackend);
+    if (kvaserHandle < 0) {
+        return QCanBusDevice::CanBusStatus::Unknown;
+    }
+    quint32 flags;
+    KvaserStatus result = canReadStatus(kvaserHandle, &flags);
+    if (result != KvaserStatus::OK) {
+        const QString errorString = systemErrorString(result);
+        qCWarning(QT_CANBUS_PLUGINS_KVASERCAN, "Can not query CAN bus status: %ls.",
+            qUtf16Printable(errorString));
+        q->setError(errorString, QCanBusDevice::CanBusError::ReadError);
+        return QCanBusDevice::CanBusStatus::Unknown;
+    }
+    if (flags & KVASER_STATUS_BUSOFF) {
+        return QCanBusDevice::CanBusStatus::BusOff;
+    } else if (flags & KVASER_STATUS_ERROR_PASSIVE) {
+        return QCanBusDevice::CanBusStatus::Error;
+    } else if (flags & KVASER_STATUS_ERROR_WARNING) {
+        return QCanBusDevice::CanBusStatus::Warning;
+    } else if (flags & KVASER_STATUS_ERROR_ACTIVE) {
+        return QCanBusDevice::CanBusStatus::Good;
+    }
+    qCWarning(QT_CANBUS_PLUGINS_KVASERCAN, "Unknown CAN bus status flags: 0x%08x", flags);
+    return QCanBusDevice::CanBusStatus::Unknown;
+}
+
+void KvaserCanBackendPrivate::resetController()
+{
+    Q_Q(KvaserCanBackend);
+    if (kvaserHandle < 0)
+        return;
+    KvaserStatus result = canResetBus(kvaserHandle);
+    if (result != KvaserStatus::OK) {
+        const QString errorString = systemErrorString(result);
+        qCWarning(QT_CANBUS_PLUGINS_KVASERCAN, "Failed to reset can bus: %ls.",
+            qUtf16Printable(errorString));
+        q->setError(errorString, QCanBusDevice::CanBusError::ReadError);
+    }
 }
 
 KvaserCanBackend::KvaserCanBackend(const QString &name, QObject *parent)
@@ -391,6 +509,12 @@ KvaserCanBackend::KvaserCanBackend(const QString &name, QObject *parent)
     Q_D(KvaserCanBackend);
     d->setupChannel(name);
     d->setupDefaultConfigurations();
+
+    std::function<void()> f = std::bind(&KvaserCanBackendPrivate::resetController, d_ptr);
+    setResetControllerFunction(f);
+
+    std::function<CanBusStatus()> g = std::bind(&KvaserCanBackendPrivate::busStatus, d_ptr);
+    setCanBusStatusGetter(g);
 }
 
 KvaserCanBackend::~KvaserCanBackend()
@@ -437,29 +561,49 @@ bool KvaserCanBackend::open()
 void KvaserCanBackend::close()
 {
     Q_D(KvaserCanBackend);
-
     d->close();
-
     setState(QCanBusDevice::UnconnectedState);
 }
 
 void KvaserCanBackend::setConfigurationParameter(ConfigurationKey key, const QVariant &value)
 {
-    qDebug() << Q_FUNC_INFO << key << value;
     Q_D(KvaserCanBackend);
-
     if (d->setConfigurationParameter(key, value))
         QCanBusDevice::setConfigurationParameter(key, value);
 }
 
 bool KvaserCanBackend::writeFrame(const QCanBusFrame &newData)
 {
-    // TODO: Implement this
-    return false;
+    Q_D(KvaserCanBackend);
+
+    if (state() != QCanBusDevice::ConnectedState)
+        return false;
+
+    if (Q_UNLIKELY(!newData.isValid())) {
+        setError(tr("Cannot write invalid QCanBusFrame"), QCanBusDevice::WriteError);
+        return false;
+    }
+
+    if (Q_UNLIKELY(newData.frameType() != QCanBusFrame::DataFrame
+            && newData.frameType() != QCanBusFrame::RemoteRequestFrame
+            && newData.frameType() != QCanBusFrame::ErrorFrame)) {
+        setError(tr("Unable to write a frame with unacceptable type"),
+                 QCanBusDevice::WriteError);
+        return false;
+    }
+
+    enqueueOutgoingFrame(newData);
+
+    if (!d->writeNotifier->isActive())
+        d->writeNotifier->start();
+
+    return true;
 }
 
 QString KvaserCanBackend::interpretErrorFrame(const QCanBusFrame &errorFrame)
 {
+    if (errorFrame.frameType() != QCanBusFrame::ErrorFrame)
+        return QString();
     // TODO: Implement this
     return QString();
 }

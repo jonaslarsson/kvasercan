@@ -129,6 +129,9 @@ GENERATE_SYMBOL_VARIABLE(KvaserStatus, canBusOff, KvaserHandle)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, kvSetNotifyCallback, KvaserHandle, KvaserCallback, void *, quint32)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canReadStatus, KvaserHandle, quint32 * const)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canRead, KvaserHandle, quint32 *, void *, quint32 *, quint32 *, quint32 *)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canGetErrorText, KvaserStatus, char *, size_t)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canResetBus , KvaserHandle)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canWrite , KvaserHandle, quint32, const void *, quint32, quint32)
 
 inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary)
 {
@@ -162,6 +165,9 @@ inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary)
     RESOLVE_SYMBOL(kvSetNotifyCallback)
     RESOLVE_SYMBOL(canReadStatus)
     RESOLVE_SYMBOL(canRead)
+    RESOLVE_SYMBOL(canGetErrorText)
+    RESOLVE_SYMBOL(canResetBus)
+    RESOLVE_SYMBOL(canWrite)
     return true;
 }
 
