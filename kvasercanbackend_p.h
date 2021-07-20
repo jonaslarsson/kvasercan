@@ -69,7 +69,10 @@ public:
     void setupChannel(const QString& interfaceName);
     void setupDefaultConfigurations();
     QString systemErrorString(KvaserStatus errorCode) const;
+    bool setReceiveOwnKey(bool enable);
+    bool setLoopback(bool enable);
     bool setBitRate(quint32 bitrate);
+    bool setFilters(const QList<QCanBusDevice::Filter>& filterList);
     bool setDriverMode(KvaserDriverMode mode);
     bool setBusOn();
     void startWrite();

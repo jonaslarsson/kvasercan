@@ -99,19 +99,19 @@ QList<QCanBusDeviceInfo> KvaserCanBackend::interfaces()
 
     for (int channel = 0; channel < channelCount; ++channel) {
         char name[256];
-        if (canGetChannelData(channel, CanChannelDataItem::DeviceProductName, &name, sizeof(name)) != KvaserStatus::OK)
+        if (canGetChannelData(channel, KvaserCanGetChannelDataItem::DeviceProductName, &name, sizeof(name)) != KvaserStatus::OK)
             continue;
 
         quint64 serial;
-        if (canGetChannelData(channel, CanChannelDataItem::CardSerialNumber, &serial, sizeof(serial)) != KvaserStatus::OK)
+        if (canGetChannelData(channel, KvaserCanGetChannelDataItem::CardSerialNumber, &serial, sizeof(serial)) != KvaserStatus::OK)
             continue;
 
         quint32 channelOnCard = 0;
-        if (canGetChannelData(channel, CanChannelDataItem::CardChannelNumber, &channelOnCard, sizeof(channelOnCard)) != KvaserStatus::OK)
+        if (canGetChannelData(channel, KvaserCanGetChannelDataItem::CardChannelNumber, &channelOnCard, sizeof(channelOnCard)) != KvaserStatus::OK)
             continue;
 
         quint32 capabilities = 0;
-        if (canGetChannelData(channel, CanChannelDataItem::Capabilities, &capabilities, sizeof(capabilities)) != KvaserStatus::OK)
+        if (canGetChannelData(channel, KvaserCanGetChannelDataItem::Capabilities, &capabilities, sizeof(capabilities)) != KvaserStatus::OK)
             continue;
 
         const bool isVirtual = capabilities & KVASER_CAPABILITY_VIRTUAL;
@@ -166,6 +166,7 @@ KvaserCanBackendPrivate::KvaserCanBackendPrivate(KvaserCanBackend *q)
 
 KvaserCanBackendPrivate::~KvaserCanBackendPrivate()
 {
+    close();
 }
 
 bool KvaserCanBackendPrivate::open()
@@ -222,6 +223,15 @@ bool KvaserCanBackendPrivate::setConfigurationParameter(QCanBusDevice::Configura
     Q_Q(KvaserCanBackend);
 
     switch (key) {
+    case QCanBusDevice::ReceiveOwnKey:
+        return setReceiveOwnKey(value.toBool());
+    case QCanBusDevice::LoopbackKey:
+        return setLoopback(value.toBool());
+    case QCanBusDevice::RawFilterKey:
+    {
+        const QList<QCanBusDevice::Filter> filterList = value.value<QList<QCanBusDevice::Filter> >();
+        return setFilters(filterList);
+    }
     case QCanBusDevice::BitRateKey:
         return setBitRate(value.toUInt());
     default:
@@ -266,6 +276,34 @@ QString KvaserCanBackendPrivate::systemErrorString(KvaserStatus errorCode) const
     return KvaserCanBackend::tr("Unable to retrieve an error string");
 }
 
+bool KvaserCanBackendPrivate::setReceiveOwnKey(bool enable)
+{
+    Q_Q(KvaserCanBackend);
+    if (q->state() == QCanBusDevice::ConnectedState && initAccess) {
+        quint32 receiveOwnKey = enable ? 1 : 0;
+        KvaserStatus result = canIoCtl(kvaserHandle, KVASER_IOCTL_RECEIVE_OWN_KEY, &receiveOwnKey, sizeof(receiveOwnKey));
+        if (result != KvaserStatus::OK) {
+            q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool KvaserCanBackendPrivate::setLoopback(bool enable)
+{
+    Q_Q(KvaserCanBackend);
+    if (q->state() == QCanBusDevice::ConnectedState && initAccess) {
+        char transmitEcho = enable ? 1 : 0;
+        KvaserStatus result = canIoCtl(kvaserHandle, KVASER_IOCTL_SET_LOOPBACK, &transmitEcho, sizeof(transmitEcho));
+        if (result != KvaserStatus::OK) {
+            q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool KvaserCanBackendPrivate::setBitRate(quint32 bitrate)
 {
     Q_Q(KvaserCanBackend);
@@ -306,6 +344,95 @@ bool KvaserCanBackendPrivate::setBitRate(quint32 bitrate)
         if (result != KvaserStatus::OK) {
             q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
             return false;
+        }
+    }
+    return true;
+}
+
+bool KvaserCanBackendPrivate::setFilters(const QList<QCanBusDevice::Filter>& filterList)
+{
+    Q_Q(KvaserCanBackend);
+    bool isStandardFrameFilterSet = false;
+    bool isExtendedFrameFilterSet = false;
+
+    if (filterList.isEmpty()) {
+        if (q->state() == QCanBusDevice::ConnectedState && initAccess) {
+            // Permit all standard frames
+            KvaserStatus result = canSetAcceptanceFilter(kvaserHandle, 0, 0, 0);
+            if (result != KvaserStatus::OK) {
+                q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+                return false;
+            }
+            // Permit all extended frames
+            result = canSetAcceptanceFilter(kvaserHandle, 0, 0, 1);
+            if (result != KvaserStatus::OK) {
+                q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+                return false;
+            }
+        }
+    } else {
+        foreach (const QCanBusDevice::Filter& filter, filterList) {
+            if (filter.type != QCanBusFrame::DataFrame) {
+                q->setError(KvaserCanBackend::tr("Only DataFrame filters are supported"), QCanBusDevice::ConfigurationError);
+                return false;
+            }
+
+            switch (filter.format) {
+            case QCanBusDevice::Filter::MatchBaseFormat:
+            {
+                if (isStandardFrameFilterSet) {
+                    q->setError(KvaserCanBackend::tr("Hardware supports only one standard frame and one extended frame filter"), QCanBusDevice::ConfigurationError);
+                    return false;
+                }
+                isStandardFrameFilterSet = true;
+                if (q->state() == QCanBusDevice::ConnectedState && initAccess) {
+                    KvaserStatus result = canSetAcceptanceFilter(kvaserHandle, filter.frameId, filter.frameIdMask, 0);
+                    if (result != KvaserStatus::OK) {
+                        q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+                        return false;
+                    }
+                }
+                break;
+            }
+            case QCanBusDevice::Filter::MatchExtendedFormat:
+            {
+                if (isExtendedFrameFilterSet) {
+                    q->setError(KvaserCanBackend::tr("Hardware supports only one standard frame and one extended frame filter"), QCanBusDevice::ConfigurationError);
+                    return false;
+                }
+                isExtendedFrameFilterSet = true;
+                if (q->state() == QCanBusDevice::ConnectedState && initAccess) {
+                    KvaserStatus result = canSetAcceptanceFilter(kvaserHandle, filter.frameId, filter.frameIdMask, 1);
+                    if (result != KvaserStatus::OK) {
+                        q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+                        return false;
+                    }
+                }
+                break;
+            }
+            case QCanBusDevice::Filter::MatchBaseAndExtendedFormat:
+            {
+                if (isExtendedFrameFilterSet || isStandardFrameFilterSet) {
+                    q->setError(KvaserCanBackend::tr("Hardware supports only one standard frame and one extended frame filter"), QCanBusDevice::ConfigurationError);
+                    return false;
+                }
+                isStandardFrameFilterSet = true;
+                isExtendedFrameFilterSet = true;
+                if (q->state() == QCanBusDevice::ConnectedState && initAccess) {
+                    KvaserStatus result = canSetAcceptanceFilter(kvaserHandle, filter.frameId, filter.frameIdMask, 0);
+                    if (result != KvaserStatus::OK) {
+                        q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+                        return false;
+                    }
+                    result = canSetAcceptanceFilter(kvaserHandle, filter.frameId, filter.frameIdMask, 1);
+                    if (result != KvaserStatus::OK) {
+                        q->setError(systemErrorString(result), QCanBusDevice::ConfigurationError);
+                        return false;
+                    }
+                }
+                break;
+            }
+            }
         }
     }
     return true;

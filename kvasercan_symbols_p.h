@@ -46,6 +46,10 @@
 #  error "Unsupported platform"
 #endif
 
+#ifdef LINK_LIBKVASERCAN
+#define GENERATE_SYMBOL_VARIABLE(returnType, symbolName, ...) \
+    extern "C" { extern returnType __declspec(dllimport) symbolName(__VA_ARGS__); }
+#else
 #define GENERATE_SYMBOL_VARIABLE(returnType, symbolName, ...) \
     typedef returnType (WINAPI *fp_##symbolName)(__VA_ARGS__); \
     static fp_##symbolName symbolName;
@@ -54,13 +58,14 @@
     symbolName = reinterpret_cast<fp_##symbolName>(kvasercanLibrary->resolve(#symbolName)); \
     if (!symbolName) \
         return false;
+#endif
 
 enum class KvaserStatus {
     OK = 0,
     NoMessages = -2
 };
 
-enum class CanChannelDataItem {
+enum class KvaserCanGetChannelDataItem {
     Capabilities = 1,
     CardChannelNumber = 6,
     CardSerialNumber = 7,
@@ -113,12 +118,15 @@ enum class KvaserDriverMode {
 #define KVASER_OPEN_REQUIRE_INIT_ACCESS  0x80
 #define KVASER_OPEN_NO_INIT_ACCESS      0x100
 
+#define KVASER_IOCTL_RECEIVE_OWN_KEY 7
+#define KVASER_IOCTL_SET_LOOPBACK 32
+
 typedef int KvaserHandle;
 typedef void (WINAPI *KvaserCallback) (KvaserHandle, void *, quint32);
 
 GENERATE_SYMBOL_VARIABLE(void, canInitializeLibrary, void)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canGetNumberOfChannels, int *)
-GENERATE_SYMBOL_VARIABLE(KvaserStatus, canGetChannelData, int, CanChannelDataItem, void *, size_t)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canGetChannelData, int, KvaserCanGetChannelDataItem, void *, size_t)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canIoCtl, KvaserHandle, quint32, void *, quint32)
 GENERATE_SYMBOL_VARIABLE(KvaserHandle, canOpenChannel, int, int)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canClose, KvaserHandle)
@@ -132,7 +140,9 @@ GENERATE_SYMBOL_VARIABLE(KvaserStatus, canRead, KvaserHandle, quint32 *, void *,
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canGetErrorText, KvaserStatus, char *, size_t)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canResetBus , KvaserHandle)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canWrite , KvaserHandle, quint32, const void *, quint32, quint32)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canSetAcceptanceFilter , KvaserHandle, quint32, quint32, int)
 
+#ifndef LINK_LIBKVASERCAN
 inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary)
 {
     if (!kvasercanLibrary->isLoaded()) {
@@ -168,7 +178,9 @@ inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary)
     RESOLVE_SYMBOL(canGetErrorText)
     RESOLVE_SYMBOL(canResetBus)
     RESOLVE_SYMBOL(canWrite)
+    RESOLVE_SYMBOL(canSetAcceptanceFilter)
     return true;
 }
+#endif
 
 #endif // KVASERCAN_SYMBOLS_P_H
