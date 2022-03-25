@@ -55,6 +55,10 @@ Q_DECLARE_LOGGING_CATEGORY(QT_CANBUS_PLUGINS_KVASERCAN)
 Q_GLOBAL_STATIC(QLibrary, kvasercanLibrary)
 #endif
 
+// WARNING: This function is called from a high priority thread within CANLIB.
+//          Sending a message to Qt on every event WILL hang the Qt event loop
+//          under high bus loads, since events will be coming in faster than
+//          they can be processed.
 static void WINAPI callbackHandler(KvaserHandle, void *internalPointer, quint32 eventFlags)
 {
     auto backend = static_cast<KvaserCanBackend*>(internalPointer);
