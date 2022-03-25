@@ -1,6 +1,8 @@
 /****************************************************************************
 **
+** Copyright (C) 2017 Denis Shienkov <denis.shienkov@gmail.com>
 ** Copyright (C) 2019 Andre Hartmann <aha_1980@gmx.de>
+** Copyright (C) 2021 Jonas Larsson <jonas.larsson@systemrefine.com>
 ** Contact: http://www.qt.io/licensing/
 **
 ** This file is part of the QtSerialBus module of the Qt Toolkit.
@@ -37,6 +39,8 @@
 #ifndef KVASERCANBACKEND_H
 #define KVASERCANBACKEND_H
 
+#include "kvasercan_symbols_p.h"
+
 #include <QtSerialBus/qcanbusframe.h>
 #include <QtSerialBus/qcanbusdevice.h>
 #include <QtSerialBus/qcanbusdeviceinfo.h>
@@ -46,32 +50,56 @@
 
 QT_BEGIN_NAMESPACE
 
-class KvaserCanBackendPrivate;
-
+class QTimer;
 class KvaserCanBackend : public QCanBusDevice
 {
     Q_OBJECT
-    Q_DECLARE_PRIVATE(KvaserCanBackend)
     Q_DISABLE_COPY(KvaserCanBackend)
 
 public:
     explicit KvaserCanBackend(const QString &name, QObject *parent = nullptr);
     ~KvaserCanBackend();
-
     bool open() override;
     void close() override;
-
     void setConfigurationParameter(ConfigurationKey key, const QVariant &value) override;
-
-    bool writeFrame(const QCanBusFrame &newData) override;
-
+    bool writeFrame(const QCanBusFrame &frame) override;
     QString interpretErrorFrame(const QCanBusFrame &errorFrame) override;
-
     static bool canCreate(QString *errorReason);
     static QList<QCanBusDeviceInfo> interfaces();
+    QCanBusDevice::CanBusStatus busStatus() override;
+    void resetController() override;
+    void setMessagesAvailable()
+    {
+        if (m_messagesAvailable == false) {
+            m_messagesAvailable = true;
+            QMetaObject::invokeMethod(this, &KvaserCanBackend::onMessagesAvailable, Qt::QueuedConnection);
+        }
+    }
+
+public slots:
+    void onMessagesAvailable();
+    void onStatusChanged();
+    void onBusOnOff();
+    void onDeviceRemoved();
 
 private:
-    KvaserCanBackendPrivate * const d_ptr;
+    bool applyConfigurationParameter(ConfigurationKey key, const QVariant &value);
+    void setupChannel(const QString& interfaceName);
+    void setupDefaultConfigurations();
+    bool setReceiveOwnKey(bool enable);
+    bool setLoopback(bool enable);
+    bool setBitRate(quint32 bitrate);
+    bool setDataBitRate(quint32 bitrate);
+    bool setCanFd(bool enable);
+    bool setFilters(const QList<QCanBusDevice::Filter>& filterList);
+    bool setDriverMode(KvaserDriverMode mode);
+    bool setBusOn();
+    bool updateSettingsAllowed();
+    QString m_interfaceName;
+    KvaserHandle m_kvaserHandle = -1;
+    bool m_initAccess = true;
+    bool m_messagesAvailable = false;
+    bool m_canFd = false;
 };
 
 QT_END_NAMESPACE

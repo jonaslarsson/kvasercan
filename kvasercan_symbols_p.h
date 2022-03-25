@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2017 Denis Shienkov <denis.shienkov@gmail.com>
+** Copyright (C) 2021 Jonas Larsson <jonas.larsson@systemrefine.com>
 ** Contact: http://www.qt.io/licensing/
 **
 ** This file is part of the QtSerialBus module of the Qt Toolkit.
@@ -52,12 +52,14 @@
 #else
 #define GENERATE_SYMBOL_VARIABLE(returnType, symbolName, ...) \
     typedef returnType (WINAPI *fp_##symbolName)(__VA_ARGS__); \
-    static fp_##symbolName symbolName;
+    static fp_##symbolName symbolName = nullptr;
 
 #define RESOLVE_SYMBOL(symbolName) \
     symbolName = reinterpret_cast<fp_##symbolName>(kvasercanLibrary->resolve(#symbolName)); \
-    if (!symbolName) \
-        return false;
+    if (!symbolName) { \
+        *errorReason = QObject::tr("Failed to resolve function %1.").arg(#symbolName); \
+        return false; \
+    }
 #endif
 
 enum class KvaserStatus {
@@ -69,6 +71,7 @@ enum class KvaserCanGetChannelDataItem {
     Capabilities = 1,
     CardChannelNumber = 6,
     CardSerialNumber = 7,
+    CardUpcNumber = 11,
     DeviceProductName  = 26
 };
 
@@ -91,6 +94,14 @@ enum class KvaserDriverMode {
 #define KVASER_BITRATE_500K (-2)
 #define KVASER_BITRATE_1M   (-1)
 
+#define KVASER_DATA_BITRATE_500K_80P (-1000)
+#define KVASER_DATA_BITRATE_1M_80P (-1001)
+#define KVASER_DATA_BITRATE_2M_80P (-1002)
+#define KVASER_DATA_BITRATE_4M_80P (-1003)
+#define KVASER_DATA_BITRATE_8M_60P (-1004)
+#define KVASER_DATA_BITRATE_8M_80P (-1005)
+#define KVASER_DATA_BITRATE_8M_70P (-1006)
+
 #define KVASER_NOTIFY_RX        0x01
 #define KVASER_NOTIFY_TX        0x02
 #define KVASER_NOTIFY_ERROR     0x04
@@ -109,17 +120,23 @@ enum class KvaserDriverMode {
 #define KVASER_STATUS_HW_OVERRUN     0x200
 #define KVASER_STATUS_SW_OVERRUN     0x400
 
-#define KVASER_MESSAGE_REMOTE_REQUEST            0x1
-#define KVASER_MESSAGE_STANDARD_FRAME_FORMAT     0x2
-#define KVASER_MESSAGE_EXTENDED_FRAME_FORMAT     0x4
-#define KVASER_MESSAGE_ERROR_FRAME              0x20
+#define KVASER_MESSAGE_REMOTE_REQUEST           0x000001
+#define KVASER_MESSAGE_STANDARD_FRAME_FORMAT    0x000002
+#define KVASER_MESSAGE_EXTENDED_FRAME_FORMAT    0x000004
+#define KVASER_MESSAGE_ERROR_FRAME              0x000020
+#define KVASER_MESSAGE_CANFD                    0x010000
+#define KVASER_MESSAGE_BIT_RATE_SWITCH          0x020000
 
 #define KVASER_OPEN_ACCEPT_VIRTUAL       0x20
 #define KVASER_OPEN_REQUIRE_INIT_ACCESS  0x80
 #define KVASER_OPEN_NO_INIT_ACCESS      0x100
+#define KVASER_OPEN_CANFD               0x400
 
 #define KVASER_IOCTL_RECEIVE_OWN_KEY 7
 #define KVASER_IOCTL_SET_LOOPBACK 32
+
+#define KVASER_FILTER_STANDARD_FRAME_FORMAT 0
+#define KVASER_FILTER_EXTENDED_FRAME_FORMAT 1
 
 typedef int KvaserHandle;
 typedef void (WINAPI *KvaserCallback) (KvaserHandle, void *, quint32);
@@ -131,6 +148,7 @@ GENERATE_SYMBOL_VARIABLE(KvaserStatus, canIoCtl, KvaserHandle, quint32, void *, 
 GENERATE_SYMBOL_VARIABLE(KvaserHandle, canOpenChannel, int, int)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canClose, KvaserHandle)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canSetBusParams, KvaserHandle, qint32, quint32, quint32, quint32, quint32, quint32)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canSetBusParamsFd, KvaserHandle, qint32, quint32, quint32, quint32)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canSetBusOutputControl, KvaserHandle, quint32)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canBusOn, KvaserHandle)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canBusOff, KvaserHandle)
@@ -138,12 +156,13 @@ GENERATE_SYMBOL_VARIABLE(KvaserStatus, kvSetNotifyCallback, KvaserHandle, Kvaser
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canReadStatus, KvaserHandle, quint32 * const)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canRead, KvaserHandle, quint32 *, void *, quint32 *, quint32 *, quint32 *)
 GENERATE_SYMBOL_VARIABLE(KvaserStatus, canGetErrorText, KvaserStatus, char *, size_t)
-GENERATE_SYMBOL_VARIABLE(KvaserStatus, canResetBus , KvaserHandle)
-GENERATE_SYMBOL_VARIABLE(KvaserStatus, canWrite , KvaserHandle, quint32, const void *, quint32, quint32)
-GENERATE_SYMBOL_VARIABLE(KvaserStatus, canSetAcceptanceFilter , KvaserHandle, quint32, quint32, int)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canResetBus, KvaserHandle)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canWrite, KvaserHandle, quint32, const void *, quint32, quint32)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canSetAcceptanceFilter, KvaserHandle, quint32, quint32, int)
+GENERATE_SYMBOL_VARIABLE(KvaserStatus, canEnumHardwareEx, int *)
 
 #ifndef LINK_LIBKVASERCAN
-inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary)
+inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary, QString *errorReason)
 {
     if (!kvasercanLibrary->isLoaded()) {
         kvasercanLibrary->setFileName(QStringLiteral("canlib32"));
@@ -154,14 +173,21 @@ inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary)
             QSettings settings("HKEY_LOCAL_MACHINE\\SOFTWARE\\KVASER AB\\CANLIB32", QSettings::NativeFormat);
             if (settings.contains("InstallDir")) {
                 QString installDir = settings.value("InstallDir").toString();
-                kvasercanLibrary->setFileName(installDir + "\\canlib32.dll");
+#ifdef Q_OS_WIN64
+                // 64-bit version of driver is also called canlib32.dll
+                kvasercanLibrary->setFileName(installDir + "/canlib32.dll");
+#else
+                kvasercanLibrary->setFileName(installDir + "/32/canlib32.dll");
+#endif
             }
         }
 #endif
-        if (!kvasercanLibrary->load())
+        if (!kvasercanLibrary->load()) {
+            *errorReason = QObject::tr("Failed to load %1.").arg("CANLIB") + " " +
+                    kvasercanLibrary->errorString();
             return false;
+        }
     }
-
     RESOLVE_SYMBOL(canInitializeLibrary)
     RESOLVE_SYMBOL(canGetNumberOfChannels)
     RESOLVE_SYMBOL(canGetChannelData)
@@ -179,6 +205,11 @@ inline bool resolveKvaserCanSymbols(QLibrary *kvasercanLibrary)
     RESOLVE_SYMBOL(canResetBus)
     RESOLVE_SYMBOL(canWrite)
     RESOLVE_SYMBOL(canSetAcceptanceFilter)
+
+    // These function only exists in newer versions of CANLIB
+    canEnumHardwareEx = reinterpret_cast<fp_canEnumHardwareEx>(kvasercanLibrary->resolve("canEnumHardwareEx"));
+    canSetBusParamsFd = reinterpret_cast<fp_canSetBusParamsFd>(kvasercanLibrary->resolve("canSetBusParamsFd"));
+
     return true;
 }
 #endif

@@ -1,6 +1,8 @@
 /****************************************************************************
 **
+** Copyright (C) 2017 Denis Shienkov <denis.shienkov@gmail.com>
 ** Copyright (C) 2018 Andre Hartmann <aha_1980@gmx.de>
+** Copyright (C) 2021 Jonas Larsson <jonas.larsson@systemrefine.com>
 ** Contact: http://www.qt.io/licensing/
 **
 ** This file is part of the QtSerialBus module of the Qt Toolkit.
@@ -45,7 +47,7 @@ QT_BEGIN_NAMESPACE
 
 Q_LOGGING_CATEGORY(QT_CANBUS_PLUGINS_KVASERCAN, "qt.canbus.plugins.kvasercan")
 
-class VirtualCanBusPlugin : public QObject, public QCanBusFactory
+class KvaserCanBusPlugin : public QObject, public QCanBusFactory
 {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "org.qt-project.Qt.QCanBusFactory" FILE "plugin.json")

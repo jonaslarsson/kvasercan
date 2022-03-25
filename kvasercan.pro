@@ -9,8 +9,7 @@ DESTDIR = $$(QTDIR)/plugins/canbus
 
 HEADERS += \
     kvasercanbackend.h \
-    kvasercan_symbols_p.h \
-    kvasercanbackend_p.h
+    kvasercan_symbols_p.h
 
 SOURCES += \
     main.cpp \
